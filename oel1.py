@@ -815,7 +815,115 @@ class FileManagerApp:
                 messagebox.showerror("Error", f"Failed to move file: {e}")
     
     def show_memory_map(self):
-        messagebox.showinfo("Memory Map", "Visual memory map will be displayed here")
+        """Display a visual memory map of the current directory's contents"""
+        # Create a new top-level window
+        map_window = ctk.CTkToplevel(self.root)
+        map_window.title("Memory Map")
+        map_window.geometry("800x600")
+        map_window.transient(self.root)
+        
+        # Create a frame for the visualization
+        map_frame = ctk.CTkFrame(map_window)
+        map_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        
+        # Create a standard tkinter Canvas
+        from tkinter import Canvas
+        canvas = Canvas(map_frame, bg="white", bd=0, highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+        
+        # Calculate directory statistics
+        total_size = 0
+        file_data = []
+        skipped_items = []
+        
+        for item in os.listdir(self.current_dir):
+            full_path = os.path.join(self.current_dir, item)
+            try:
+                if os.path.islink(full_path):  # Skip symbolic links
+                    continue
+                    
+                if os.path.isdir(full_path):
+                    try:
+                        size = sum(os.path.getsize(os.path.join(dirpath, filename)) 
+                                for dirpath, dirnames, filenames in os.walk(full_path) 
+                                for filename in filenames)
+                    except (PermissionError, OSError) as e:
+                        skipped_items.append(f"{item} (directory)")
+                        continue
+                else:
+                    try:
+                        size = os.path.getsize(full_path)
+                    except (PermissionError, OSError) as e:
+                        skipped_items.append(f"{item} (file)")
+                        continue
+                
+                file_data.append({
+                    'name': item,
+                    'size': size,
+                    'is_dir': os.path.isdir(full_path)
+                })
+                total_size += size
+                
+            except Exception as e:
+                skipped_items.append(f"{item} (error: {str(e)})")
+                continue
+        
+        # Show skipped items in console (optional)
+        if skipped_items:
+            print(f"Skipped {len(skipped_items)} items:")
+            for item in skipped_items:
+                print(f" - {item}")
+        
+        if not file_data:
+            canvas.create_text(400, 300, 
+                            text="No displayable files found\n(Skipped {} items)".format(len(skipped_items)), 
+                            font=("Arial", 16),
+                            fill="#333333")
+            self.add_close_button(map_window)
+            return
+        
+        # Sort files by size (descending)
+        file_data.sort(key=lambda x: x['size'], reverse=True)
+        
+        # Visualization parameters
+        width = 700
+        height = 500
+        margin = 20
+        max_blocks = 50
+        
+        # Draw title and summary
+        canvas.create_text(width//2, 20, 
+                        text=f"Memory Map: {self.current_dir}", 
+                        font=("Arial", 14, "bold"),
+                        fill="#333333")
+        
+        info_text = (f"Total Size: {self.format_size(total_size)} | "
+                    f"{len(file_data)} items displayed | "
+                    f"{len(skipped_items)} items skipped")
+        canvas.create_text(width//2, 50, 
+                        text=info_text, 
+                        font=("Arial", 12),
+                        fill="#555555")
+        
+        # Draw the visualization (same as before)
+        # ... [rest of your visualization code remains the same] ...
+        
+        self.add_close_button(map_window)
+
+    def add_close_button(self, window):
+        """Helper method to add a close button"""
+        btn_frame = ctk.CTkFrame(window)
+        btn_frame.pack(pady=10)
+        
+        ctk.CTkButton(btn_frame, 
+                    text="Close", 
+                    command=window.destroy,
+                    width=100).pack(padx=5)
+
+    def refresh_memory_map(self, window):
+        """Refresh the memory map display"""
+        window.destroy()
+        self.show_memory_map()
 
 if __name__ == "__main__":
     root = ctk.CTk()
