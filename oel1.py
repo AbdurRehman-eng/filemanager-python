@@ -148,7 +148,7 @@ class FileSystem:
             else:
                 return None, "File does not exist"
 
-        file_obj = FileObject(self, parent["contents"][fname]["data_id"], mode)
+        file_obj = FileObject(self, parent["contents"][fname]["data_id"], mode, full_path)
         self.open_files[full_path] = file_obj
         return file_obj, f"File {fName} opened in {mode} mode"
 
@@ -162,8 +162,28 @@ class FileSystem:
 
     def show_memory_map(self):
         result = "Memory Map:\n"
+        
+        def find_file_path(data_id, current_path="/", current_dir=None):
+            if current_dir is None:
+                current_dir = self.fs_structure["/"]
+            
+            for name, info in current_dir["contents"].items():
+                full_path = os.path.join(current_path, name).replace("\\", "/")
+                if info["type"] == "file" and info["data_id"] == data_id:
+                    return full_path
+                elif info["type"] == "directory":
+                    sub_result = find_file_path(data_id, full_path, info)
+                    if sub_result:
+                        return sub_result
+            return None
+
         for data_id, content in self.memory_map.items():
-            result += f"Block {data_id}: {len(content)} bytes\n"
+            file_path = find_file_path(data_id)
+            if file_path:
+                result += f"Block {data_id}: {len(content)} bytes (File: {file_path})\n"
+            else:
+                result += f"Block {data_id}: {len(content)} bytes (File: <not found>)\n"
+        
         return result
 
     def list_dir(self, dir_path=None):
@@ -183,33 +203,50 @@ class FileSystem:
         return result
 
 class FileObject:
-    def __init__(self, fs, data_id, mode):
+    def __init__(self, fs, data_id, mode, full_path):
         self.fs = fs
         self.data_id = data_id
         self.mode = mode
+        self.full_path = full_path
 
     def write_to_file(self, text, write_at=None):
         if self.mode not in ["w", "a"]:
             return "Invalid mode for writing"
         content = self.fs.memory_map[self.data_id]
         if self.mode == "w" and write_at is None:
-            content = text  # Overwrite in write mode
+            content = text  # Overwrite entire content in write mode
         elif write_at is None:
-            content += text  # Append in append mode
+            content += text  # Append text in append mode
         else:
-            content = content[:write_at] + text + content[write_at + len(text):]
+            content = content[:write_at] + text + content[write_at + len(text):]  # Write at specific position
         self.fs.memory_map[self.data_id] = content
+        
+        # Update file size in fs_structure
+        parent_path = os.path.dirname(self.full_path)
+        fname = os.path.basename(self.full_path)
+        parent = self.fs.get_directory(parent_path)
+        if parent and fname in parent["contents"]:
+            parent["contents"][fname]["size"] = len(content)
+        
         self.fs.save_data()
         return "Write successful"
 
     def read_from_file(self, start=None, size=None):
         content = self.fs.memory_map[self.data_id]
+        content_length = len(content)
+        
         if start is None:
             return content
-        start = max(0, start)
+        start = max(0, int(start))
+        if start >= content_length:
+            return ""  # Return empty string if start is beyond content length
+        
         if size is None:
             return content[start:]
-        return content[start:start + size]
+        size = int(size)
+        if size <= 0:
+            return ""
+        return content[start:min(start + size, content_length)]
 
     def move_within_file(self, start, size, target):
         content = self.fs.memory_map[self.data_id]
@@ -219,13 +256,30 @@ class FileObject:
         content = content[:start] + content[start + size:]
         content = content[:target] + data + content[target:]
         self.fs.memory_map[self.data_id] = content
+        
+        # Update file size
+        parent_path = os.path.dirname(self.full_path)
+        fname = os.path.basename(self.full_path)
+        parent = self.fs.get_directory(parent_path)
+        if parent and fname in parent["contents"]:
+            parent["contents"][fname]["size"] = len(content)
+        
         self.fs.save_data()
         return "Move successful"
 
     def truncate_file(self, maxSize):
         if maxSize < 0:
             return "Invalid truncate size"
-        self.fs.memory_map[self.data_id] = self.fs.memory_map[self.data_id][:maxSize]
+        content = self.fs.memory_map[self.data_id][:maxSize]
+        self.fs.memory_map[self.data_id] = content
+        
+        # Update file size
+        parent_path = os.path.dirname(self.full_path)
+        fname = os.path.basename(self.full_path)
+        parent = self.fs.get_directory(parent_path)
+        if parent and fname in parent["contents"]:
+            parent["contents"][fname]["size"] = len(content)
+        
         self.fs.save_data()
         return "Truncate successful"
 
@@ -564,6 +618,7 @@ class FileSystemGUI:
         messagebox.showinfo("Success", result)
         
     def write_file(self):
+        # Get input values
         name = self.file_name_entry.get()
         text = self.write_text.get()
         if not name or not text:
@@ -571,20 +626,22 @@ class FileSystemGUI:
             messagebox.showerror("Error", "Please enter file name and text to write")
             return
 
+        # Verify mode is valid for writing
         mode = self.mode_var.get()
         if mode not in ["w", "a"]:
             self.update_status("Error: Invalid mode selected for writing")
             messagebox.showerror("Error", "Invalid mode selected for writing")
             return
 
+        # Open file in specified mode (creates file if it doesn't exist)
         file_obj, result = self.fs.open(name, mode)
         if file_obj:
             try:
                 write_at = self.write_at.get()
                 if write_at:
-                    result = file_obj.write_to_file(text, int(write_at))
+                    result = file_obj.write_to_file(text, int(write_at))  # Write at specific position
                 else:
-                    result = file_obj.write_to_file(text)
+                    result = file_obj.write_to_file(text)  # Write based on mode (w: overwrite, a: append)
                 self.output_text.insert(tk.END, result + "\n")
                 self.fs.close(name)
                 self.update_status("Text written to file successfully")
@@ -610,24 +667,51 @@ class FileSystemGUI:
         file_obj, result = self.fs.open(name, "r")
         if file_obj:
             try:
-                start = self.read_start.get()
-                size = self.read_size.get()
-                if start and size:
-                    content = file_obj.read_from_file(int(start), int(size))
-                elif start:
-                    content = file_obj.read_from_file(int(start))
-                elif size:
-                    content = file_obj.read_from_file(size=int(size))
+                start = self.read_start.get().strip()
+                size = self.read_size.get().strip()
+                
+                # Convert inputs to integers if provided, else None
+                start_val = int(start) if start else None
+                size_val = int(size) if size else None
+                
+                # Read based on provided parameters
+                content = file_obj.read_from_file(start_val, size_val)
+                
+                # Handle empty or no content
+                if content == "":
+                    content_display = "<No content or read beyond file length>"
                 else:
-                    content = file_obj.read_from_file()
-                    
-                self.output_text.insert(tk.END, f"Contents of {name}:\n{content}\n")
+                    content_display = content
+                
+                # Show content in popup
+                content_window = tk.Toplevel(self.root)
+                content_window.title(f"Contents of {name}")
+                content_window.geometry("400x300")
+                
+                text_area = tk.Text(
+                    content_window,
+                    wrap=tk.WORD,
+                    font=("Consolas", 10),
+                    bg="#2d2d2d",
+                    fg="#f0f0f0"
+                )
+                text_area.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                text_area.insert(tk.END, content_display)
+                text_area.config(state='disabled')
+                
+                ttk.Button(
+                    content_window,
+                    text="Close",
+                    command=content_window.destroy
+                ).pack(pady=5)
+                
                 self.fs.close(name)
+                self.output_text.insert(tk.END, f"Read operation completed for {name}\n")
                 self.update_status("File read successfully")
                 messagebox.showinfo("Success", "File read successfully")
             except ValueError:
-                self.update_status("Error: Start and size must be numbers")
-                messagebox.showerror("Error", "Start and size must be numbers")
+                self.update_status("Error: Start and size must be valid numbers")
+                messagebox.showerror("Error", "Start and size must be valid numbers")
             except Exception as e:
                 self.update_status(f"Error: {str(e)}")
                 messagebox.showerror("Error", str(e))
