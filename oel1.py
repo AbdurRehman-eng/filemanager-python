@@ -1,5 +1,5 @@
 import customtkinter as ctk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, Menu
 import os
 import pickle
 import time
@@ -170,9 +170,9 @@ class FileManagerApp:
         # Action buttons with modern icons
         actions = [
             ("➕ Create", self.create_file),
-            ("🗑️ Delete", self.delete_selected),  # Changed to match actual method name
+            ("🗑️ Delete", lambda: self.delete_selected()),  # Changed to use lambda
             ("📂 Folder", self.create_dir),
-            ("🔍 Open", self.open_file),
+            ("🔍 Open", lambda: self.open_selected()),  # Changed to new method
             ("🚚 Move", self.move_file),
             ("🗺️ Map", self.show_memory_map)
         ]
@@ -446,7 +446,7 @@ class FileManagerApp:
         if not item:
             return
             
-        menu = ctk.CTkMenu(self.root, tearoff=0)
+        menu = Menu(self.root, tearoff=0)  # Changed from CTkMenu to Menu
         
         if os.path.isdir(item):
             menu.add_command(label="Open", command=lambda: self.load_directory(item))
@@ -459,7 +459,7 @@ class FileManagerApp:
         menu.add_separator()
         menu.add_command(label="Copy", command=lambda: self.copy_to_clipboard(item))
         menu.add_command(label="Paste", command=self.paste_from_clipboard)
-        menu.add_command(label="Delete", command=self.delete_selected)
+        menu.add_command(label="Delete", command=lambda: self.delete_selected())
         menu.add_separator()
         menu.add_command(label="Properties", command=lambda: self.show_properties(item))
         
@@ -467,7 +467,7 @@ class FileManagerApp:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
             menu.grab_release()
-    
+
     # File operations
     def create_file(self):
         dialog = ctk.CTkInputDialog(
@@ -507,12 +507,12 @@ class FileManagerApp:
                 messagebox.showerror("Error", f"Failed to create folder: {e}")
     
     def delete_selected(self):
-        if not self.selected_files:
+        if not self.tree.selection():
             return
             
         confirm = messagebox.askyesno(
             "Confirm Delete",
-            f"Are you sure you want to delete {len(self.selected_files)} item(s)?",
+            f"Are you sure you want to delete {len(self.tree.selection())} item(s)?",
             parent=self.root
         )
         
@@ -520,14 +520,18 @@ class FileManagerApp:
             return
             
         for item in self.tree.selection():
-            full_path = self.tree.item(item)['iid']
             try:
-                if os.path.isdir(full_path):
-                    shutil.rmtree(full_path)
-                else:
-                    os.remove(full_path)
+                # Get the full path either from iid or by joining with current_dir
+                full_path = self.tree.item(item).get('iid', os.path.join(self.current_dir, self.tree.item(item)['text']))
+                try:
+                    if os.path.isdir(full_path):
+                        shutil.rmtree(full_path)
+                    else:
+                        os.remove(full_path)
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to delete {full_path}: {e}")
             except Exception as e:
-                messagebox.showerror("Error", f"Failed to delete {full_path}: {e}")
+                messagebox.showerror("Error", f"Couldn't get path for deletion: {e}")
         
         self.load_directory(self.current_dir)
     
@@ -566,7 +570,14 @@ class FileManagerApp:
                 subprocess.call([opener, path])
         except Exception as e:
             messagebox.showerror("Error", f"Failed to open file: {e}")
-    
+            
+    def open_selected(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showerror("Error", "No file selected")
+            return
+        self.open_file(selected[0])
+
     def edit_file(self, path):
         try:
             if os.name == 'nt':  # Windows
