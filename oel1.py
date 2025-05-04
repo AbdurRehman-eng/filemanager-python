@@ -1,931 +1,713 @@
-import customtkinter as ctk
-from tkinter import ttk, messagebox, filedialog, Menu
 import os
-import pickle
-import time
+import json
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
-import shutil
-import sys
-import subprocess
+import uuid
 
-# Modern color scheme
-COLORS = {
-    "primary": "#4361ee",
-    "secondary": "#3a0ca3",
-    "background": "#f8f9fa",
-    "sidebar": "#2b2d42",
-    "text": "#495057",
-    "highlight": "#f72585"
-}
-
-class FileSystemManager:
-    def __init__(self):
-        self.current_dir = os.path.expanduser("~")
-        self.data_file = "filesystem_data.bin"
-        self.file_structure = {}
+class FileSystem:
+    def __init__(self, data_file="sample.dat"):
+        self.data_file = data_file
+        self.current_dir = "/"
+        self.fs_structure = {
+            "/": {"type": "directory", "contents": {}, "created": str(datetime.now())}
+        }
+        self.open_files = {}  # Tracks open file objects
+        self.memory_map = {}  # Tracks file data blocks
         self.load_data()
-        
+
+    def save_data(self):
+        with open(self.data_file, 'w') as f:
+            json.dump({"structure": self.fs_structure, "memory_map": self.memory_map}, f)
+
     def load_data(self):
         if os.path.exists(self.data_file):
-            try:
-                with open(self.data_file, 'rb') as f:
-                    self.file_structure = pickle.load(f)
-            except:
-                self.file_structure = {}
-        else:
-            self.file_structure = {}
-    
-    def save_data(self):
-        with open(self.data_file, 'wb') as f:
-            pickle.dump(self.file_structure, f)
-    
-    def get_file_info(self, path):
-        if path in self.file_structure:
-            return self.file_structure[path]
-        
-        try:
-            stat = os.stat(path)
-            file_info = {
-                'size': stat.st_size,
-                'modified': stat.st_mtime,
-                'created': stat.st_ctime,
-                'is_dir': os.path.isdir(path),
-                'tags': []
-            }
-            self.file_structure[path] = file_info
-            return file_info
-        except:
-            return None
-    
-    def add_tag(self, path, tag):
-        if path in self.file_structure:
-            if tag not in self.file_structure[path]['tags']:
-                self.file_structure[path]['tags'].append(tag)
-                self.save_data()
-    
-    def remove_tag(self, path, tag):
-        if path in self.file_structure:
-            if tag in self.file_structure[path]['tags']:
-                self.file_structure[path]['tags'].remove(tag)
-                self.save_data()
+            with open(self.data_file, 'r') as f:
+                data = json.load(f)
+                self.fs_structure = data["structure"]
+                self.memory_map = data.get("memory_map", {})
 
-class FileManagerApp:
-    def __init__(self, root):
-        self.root = root
-        self.root.title("FileSphere • Modern File Manager")
-        self.root.geometry("1400x900")
-        self.root.minsize(1200, 800)
-        
-        self.fs = FileSystemManager()
-        self.selected_files = []
-        self.current_dir = self.fs.current_dir
-        self.clipboard = None
-        
-        # Initialize UI components first
-        self.main_frame = None
-        self.sidebar = None
-        self.content_frame = None
-        self.toolbar = None
-        self.tree_frame = None
-        self.tree = None
-        self.status_bar = None
-        self.status_label = None
-        self.ops_panel = None
-        self.tabview = None
-        
-        self.setup_ui()
-        self.load_directory(self.current_dir)
-        
-    def setup_ui(self):
-        # Configure modern theme
-        ctk.set_appearance_mode("light")
-        ctk.set_default_color_theme("blue")
-        
-        # Main container with modern layout
-        self.main_frame = ctk.CTkFrame(self.root, fg_color=COLORS["background"])
-        self.main_frame.pack(fill="both", expand=True, padx=0, pady=0)
-        
-        # Modern sidebar with accent color
-        self.sidebar = ctk.CTkFrame(
-            self.main_frame,
-            width=280,
-            corner_radius=0,
-            fg_color=COLORS["sidebar"]
-        )
-        self.sidebar.pack(side="left", fill="y", padx=0, pady=0)
-        
-        # App logo with modern typography
-        self.logo_frame = ctk.CTkFrame(self.sidebar, fg_color="transparent")
-        self.logo_frame.pack(pady=(30, 40), padx=20, fill="x")
-        
-        ctk.CTkLabel(
-            self.logo_frame,
-            text="FileSphere",
-            font=ctk.CTkFont(size=24, weight="bold", family="Helvetica"),
-            text_color="white"
-        ).pack(side="left")
-        
-        # Modern navigation with icons
-        nav_items = [
-            ("Dashboard", "📊"),
-            ("Files", "📁"),
-            ("Shared", "👥"),
-            ("Favorites", "⭐"),
-            ("Memory Map", "🧠"),
-            ("Settings", "⚙️")
-        ]
-        
-        for text, icon in nav_items:
-            btn = ctk.CTkButton(
-                self.sidebar,
-                text=f"  {icon}  {text}",
-                font=ctk.CTkFont(size=14),
-                anchor="w",
-                fg_color="transparent",
-                hover_color="#3a3b3c",
-                text_color="white",
-                height=40,
-                corner_radius=8
-            )
-            btn.pack(fill="x", padx=12, pady=4)
-        
-        # Main content area with card-based layout
-        self.content_frame = ctk.CTkFrame(
-            self.main_frame,
-            fg_color=COLORS["background"]
-        )
-        self.content_frame.pack(side="right", fill="both", expand=True, padx=0, pady=0)
-        
-        # Modern toolbar with floating effect
-        self.toolbar = ctk.CTkFrame(
-            self.content_frame,
-            height=70,
-            fg_color="white",
-            border_width=1,
-            border_color="#e9ecef",
-            corner_radius=12
-        )
-        self.toolbar.pack(fill="x", padx=20, pady=20)
-        
-        # Action buttons with modern icons
-        actions = [
-            ("➕ Create", self.create_file),
-            ("🗑️ Delete", lambda: self.delete_selected()),  # Changed to use lambda
-            ("📂 Folder", self.create_dir),
-            ("🔍 Open", lambda: self.open_selected()),  # Changed to new method
-            ("🚚 Move", self.move_file),
-            ("🗺️ Map", self.show_memory_map)
-        ]
-                
-        for i, (text, command) in enumerate(actions):
-            btn = ctk.CTkButton(
-                self.toolbar,
-                text=text,
-                width=100,
-                font=ctk.CTkFont(size=13),
-                command=command,
-                fg_color=COLORS["primary"],
-                hover_color=COLORS["secondary"],
-                corner_radius=8
-            )
-            btn.grid(row=0, column=i, padx=8, pady=10)
-        
-        # Modern search bar
-        self.search_frame = ctk.CTkFrame(self.toolbar, fg_color="transparent")
-        self.search_frame.grid(row=0, column=len(actions), padx=10, sticky="e")
-        
-        self.search_entry = ctk.CTkEntry(
-            self.search_frame,
-            placeholder_text="Search files...",
-            width=220,
-            height=36,
-            border_width=1,
-            corner_radius=8,
-            fg_color="white"
-        )
-        self.search_entry.pack(side="left")
-        
-        search_btn = ctk.CTkButton(
-            self.search_frame,
-            text="🔍",
-            width=36,
-            height=36,
-            fg_color=COLORS["primary"],
-            hover_color=COLORS["secondary"],
-            corner_radius=8
-        )
-        search_btn.pack(side="left", padx=5)
-        
-        # Modern file explorer with card container
-        self.explorer_card = ctk.CTkFrame(
-            self.content_frame,
-            fg_color="white",
-            border_width=1,
-            border_color="#e9ecef",
-            corner_radius=12
-        )
-        self.explorer_card.pack(fill="both", expand=True, padx=20, pady=(0, 20))
-        
-        # File explorer header
-        header = ctk.CTkFrame(self.explorer_card, fg_color="transparent")
-        header.pack(fill="x", padx=15, pady=15)
-        
-        ctk.CTkLabel(
-            header,
-            text="File Explorer",
-            font=ctk.CTkFont(size=16, weight="bold"),
-            text_color=COLORS["text"]
-        ).pack(side="left")
-        
-        # Modern treeview with better styling
-        self.tree_frame = ctk.CTkFrame(self.explorer_card, fg_color="transparent")
-        self.tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        
-        style = ttk.Style()
-        style.theme_use("default")
-        style.configure("Treeview",
-            background="white",
-            foreground=COLORS["text"],
-            fieldbackground="white",
-            borderwidth=0,
-            font=('Helvetica', 11)
-        )
-        style.configure("Treeview.Heading",
-            background="#f8f9fa",
-            foreground=COLORS["text"],
-            font=('Helvetica', 12, 'bold'),
-            padding=10,
-            borderwidth=0
-        )
-        style.map("Treeview",
-            background=[('selected', '#e6f2ff')],
-            foreground=[('selected', COLORS["primary"])]
-        )
-        
-        self.tree = ttk.Treeview(
-            self.tree_frame,
-            columns=("size", "type", "modified"),
-            show="tree headings",
-            selectmode="extended"
-        )
-        
-        # Configure columns with modern look
-        self.tree.heading("#0", text="Name", anchor="w")
-        self.tree.heading("size", text="Size", anchor="w")
-        self.tree.heading("type", text="Type", anchor="w")
-        self.tree.heading("modified", text="Modified", anchor="w")
-        
-        self.tree.column("#0", width=300, anchor="w")
-        self.tree.column("size", width=120, anchor="w")
-        self.tree.column("type", width=120, anchor="w")
-        self.tree.column("modified", width=180, anchor="w")
-        
-        # Add tag configuration
-        self.tree.tag_configure("folder", foreground="#3a0ca3")
-        self.tree.tag_configure("file", foreground="#495057")
-        self.tree.tag_configure("selected", background="#e6f2ff")
-        
-        # Modern scrollbars
-        vsb = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(self.tree_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
-        
-        self.tree.pack(side="left", fill="both", expand=True)
-        vsb.pack(side="right", fill="y")
-        hsb.pack(side="bottom", fill="x")
-        
-        # Bind events
-        self.tree.bind("<<TreeviewSelect>>", self.on_file_select)
-        self.tree.bind("<Double-1>", self.on_file_double_click)
-        self.tree.bind("<Button-3>", self.show_context_menu)
-        
-        # Status bar with modern design
-        self.status_bar = ctk.CTkFrame(
-            self.content_frame,
-            height=40,
-            fg_color="white",
-            border_width=1,
-            border_color="#e9ecef",
-            corner_radius=8
-        )
-        self.status_bar.pack(fill="x", padx=20, pady=(0, 20))
-        
-        self.status_label = ctk.CTkLabel(
-            self.status_bar,
-            text="Ready • 0 items selected • 1.2GB available",
-            text_color="#6c757d",
-            font=ctk.CTkFont(size=12)
-        )
-        self.status_label.pack(side="left", padx=15)
-        
-        # Modern operations panel (initially hidden)
-        self.ops_panel = ctk.CTkFrame(
-            self.content_frame,
-            height=220,
-            fg_color="white",
-            border_width=1,
-            border_color="#e9ecef",
-            corner_radius=12
-        )
-        self.ops_panel.pack_propagate(False)
-        
-        # Tab view with modern styling
-        self.tabview = ctk.CTkTabview(
-            self.ops_panel,
-            segmented_button_fg_color=COLORS["primary"],
-            segmented_button_selected_color=COLORS["secondary"],
-            segmented_button_selected_hover_color=COLORS["secondary"],
-            text_color="white"
-        )
-        self.tabview.pack(fill="both", expand=True, padx=5, pady=5)
-        
-        # Add modern tabs
-        tabs = ["📄 Read", "✏️ Write", "↔️ Move", "✂️ Truncate"]
-        for tab in tabs:
-            self.tabview.add(tab)
-        
-        # Configure tabs with modern UI
-        self.setup_read_tab()
-        self.setup_write_tab()
-        self.setup_move_tab()
-        self.setup_truncate_tab()
-    
-    def load_directory(self, path):
-        """Load directory contents into the treeview"""
-        self.current_dir = path
-        self.tree.delete(*self.tree.get_children())
-        
-        # Add parent directory link
-        parent = os.path.dirname(path)
-        if os.path.exists(parent) and parent:  # Ensure parent exists and isn't root
-            self.tree.insert("", "end", text="..", 
-                        values=("--", "Parent", ""), 
-                        tags=("folder",), 
-                        iid=parent)
-        
-        try:
-            for item in sorted(os.listdir(path)):
-                full_path = os.path.join(path, item)
-                file_info = self.fs.get_file_info(full_path)
-                
-                if file_info:
-                    size = self.format_size(file_info['size']) if not file_info['is_dir'] else "--"
-                    file_type = "Folder" if file_info['is_dir'] else os.path.splitext(item)[1][1:].upper() + " File"
-                    modified = datetime.fromtimestamp(file_info['modified']).strftime('%Y-%m-%d %H:%M')
-                    
-                    tags = ("folder",) if file_info['is_dir'] else ("file",)
-                    
-                    self.tree.insert("", "end", text=item, 
-                                    values=(size, file_type, modified), 
-                                    tags=tags, 
-                                    iid=full_path)
-                    
-        except PermissionError:
-            messagebox.showerror("Error", f"Permission denied: {path}")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load directory: {e}")
-        
-        self.update_status()
-    
-    def format_size(self, size):
-        """Convert bytes to human-readable format"""
-        for unit in ['B', 'KB', 'MB', 'GB']:
-            if size < 1024.0:
-                return f"{size:.1f} {unit}"
-            size /= 1024.0
-        return f"{size:.1f} TB"
-    
-    def on_file_select(self, event):
-        """Handle file selection"""
-        self.selected_files = [self.tree.item(iid)['text'] for iid in self.tree.selection()]
-        self.update_status()
-    
-    def on_file_double_click(self, event):
-        """Handle double-click on file/folder"""
-        item = self.tree.focus()
-        if item:
-            if os.path.isdir(item):
-                self.load_directory(item)
-            else:
-                self.open_file(item)
-    
-    def update_status(self):
-        """Update status bar with current information"""
-        total_size = 0
-        selected_count = len(self.selected_files)
-        
-        for item in self.tree.get_children():
-            try:
-                full_path = self.tree.item(item)['iid']
-                if os.path.isfile(full_path):
-                    file_info = self.fs.get_file_info(full_path)
-                    if file_info:
-                        total_size += file_info['size']
-            except KeyError:
-                continue  # Skip items that don't have an 'iid' (like the parent directory "..")
-        
-        # Get disk usage info
-        try:
-            stat = os.statvfs(self.current_dir)
-            total_space = stat.f_frsize * stat.f_blocks
-            free_space = stat.f_frsize * stat.f_bfree
-            used_space = total_space - free_space
-            free_percent = (free_space / total_space) * 100
-            
-            status_text = (f"{selected_count} item(s) selected • "
-                        f"Directory: {self.format_size(total_size)} • "
-                        f"Free: {self.format_size(free_space)} ({free_percent:.1f}%)")
-        except:
-            status_text = f"{selected_count} item(s) selected • {self.current_dir}"
-        
-        self.status_label.configure(text=status_text)
-    
-    def show_context_menu(self, event):
-        """Show context menu for right-click"""
-        item = self.tree.identify_row(event.y)
-        if not item:
-            return
-            
-        menu = Menu(self.root, tearoff=0)  # Changed from CTkMenu to Menu
-        
-        if os.path.isdir(item):
-            menu.add_command(label="Open", command=lambda: self.load_directory(item))
-            menu.add_command(label="New File", command=self.create_file)
-            menu.add_command(label="New Folder", command=self.create_dir)
-        else:
-            menu.add_command(label="Open", command=lambda: self.open_file(item))
-            menu.add_command(label="Edit", command=lambda: self.edit_file(item))
-        
-        menu.add_separator()
-        menu.add_command(label="Copy", command=lambda: self.copy_to_clipboard(item))
-        menu.add_command(label="Paste", command=self.paste_from_clipboard)
-        menu.add_command(label="Delete", command=lambda: self.delete_selected())
-        menu.add_separator()
-        menu.add_command(label="Properties", command=lambda: self.show_properties(item))
-        
-        try:
-            menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            menu.grab_release()
+    def get_full_path(self, name):
+        if name.startswith("/"):
+            return name
+        return os.path.join(self.current_dir, name).replace("\\", "/")
 
-    # File operations
-    def create_file(self):
-        dialog = ctk.CTkInputDialog(
-            text="Enter new file name:",
-            title="Create File",
-            fg_color="white",
-            button_fg_color=COLORS["primary"],
-            button_hover_color=COLORS["secondary"]
-        )
-        fname = dialog.get_input()
-        if fname:
-            try:
-                full_path = os.path.join(self.current_dir, fname)
-                with open(full_path, 'w') as f:
-                    pass
-                self.load_directory(self.current_dir)
-                messagebox.showinfo("Success", f"Created new file: {fname}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to create file: {e}")
-    
-    def create_dir(self):
-        dialog = ctk.CTkInputDialog(
-            text="Enter new folder name:",
-            title="Create Folder",
-            fg_color="white",
-            button_fg_color=COLORS["primary"],
-            button_hover_color=COLORS["secondary"]
-        )
-        dname = dialog.get_input()
-        if dname:
-            try:
-                full_path = os.path.join(self.current_dir, dname)
-                os.mkdir(full_path)
-                self.load_directory(self.current_dir)
-                messagebox.showinfo("Success", f"Created new folder: {dname}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to create folder: {e}")
-    
-    def delete_selected(self):
-        if not self.tree.selection():
-            return
-            
-        confirm = messagebox.askyesno(
-            "Confirm Delete",
-            f"Are you sure you want to delete {len(self.tree.selection())} item(s)?",
-            parent=self.root
-        )
-        
-        if not confirm:
-            return
-            
-        for item in self.tree.selection():
-            try:
-                # Get the full path either from iid or by joining with current_dir
-                full_path = self.tree.item(item).get('iid', os.path.join(self.current_dir, self.tree.item(item)['text']))
-                try:
-                    if os.path.isdir(full_path):
-                        shutil.rmtree(full_path)
-                    else:
-                        os.remove(full_path)
-                except Exception as e:
-                    messagebox.showerror("Error", f"Failed to delete {full_path}: {e}")
-            except Exception as e:
-                messagebox.showerror("Error", f"Couldn't get path for deletion: {e}")
-        
-        self.load_directory(self.current_dir)
-    
-    def copy_to_clipboard(self, item):
-        self.clipboard = {
-            'type': 'copy',
-            'path': item
+    def create(self, fName):
+        full_path = self.get_full_path(fName)
+        parent_path = os.path.dirname(full_path)
+        fname = os.path.basename(full_path)
+
+        parent = self.get_directory(parent_path)
+        if not parent:
+            return "Parent directory does not exist"
+        if fname in parent["contents"]:
+            return "File/directory already exists"
+
+        parent["contents"][fname] = {
+            "type": "file",
+            "size": 0,
+            "created": str(datetime.now()),
+            "data_id": str(uuid.uuid4())
         }
-    
-    def paste_from_clipboard(self):
-        if not self.clipboard:
-            return
-            
-        source = self.clipboard['path']
-        dest = os.path.join(self.current_dir, os.path.basename(source))
-        
-        try:
-            if self.clipboard['type'] == 'copy':
-                if os.path.isdir(source):
-                    shutil.copytree(source, dest)
-                else:
-                    shutil.copy2(source, dest)
-            else:  # move
-                shutil.move(source, dest)
-            
-            self.load_directory(self.current_dir)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to paste: {e}")
-    
-    def open_file(self, path):
-        try:
-            if os.name == 'nt':  # Windows
-                os.startfile(path)
-            else:  # macOS and Linux
-                opener = 'open' if sys.platform == 'darwin' else 'xdg-open'
-                subprocess.call([opener, path])
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to open file: {e}")
-            
-    def open_selected(self):
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showerror("Error", "No file selected")
-            return
-        self.open_file(selected[0])
+        self.memory_map[parent["contents"][fname]["data_id"]] = ""
+        self.save_data()
+        return f"File {fName} created"
 
-    def edit_file(self, path):
-        try:
-            if os.name == 'nt':  # Windows
-                os.system(f'notepad "{path}"')
-            else:  # macOS and Linux
-                editor = os.environ.get('EDITOR', 'nano')
-                subprocess.call([editor, path])
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to edit file: {e}")
-    
-    def show_properties(self, path):
-        file_info = self.fs.get_file_info(path)
-        if not file_info:
-            return
-            
-        props = [
-            f"Name: {os.path.basename(path)}",
-            f"Type: {'Folder' if file_info['is_dir'] else 'File'}",
-            f"Size: {self.format_size(file_info['size'])}",
-            f"Created: {datetime.fromtimestamp(file_info['created']).strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Modified: {datetime.fromtimestamp(file_info['modified']).strftime('%Y-%m-%d %H:%M:%S')}",
-            f"Location: {os.path.dirname(path)}"
-        ]
-        
-        messagebox.showinfo("Properties", "\n".join(props))
-    
-    # Tab operations
-    def setup_read_tab(self):
-        tab = self.tabview.tab("📄 Read")
-        
-        ctk.CTkLabel(tab, text="Read Options", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
-        
-        self.read_mode = ctk.CTkSegmentedButton(
-            tab,
-            values=["Sequential Read", "Positional Read"],
-            selected_color=COLORS["primary"],
-            selected_hover_color=COLORS["secondary"]
-        )
-        self.read_mode.pack(pady=5)
-        
-        self.read_start = ctk.CTkEntry(tab, placeholder_text="Start position", height=36)
-        self.read_size = ctk.CTkEntry(tab, placeholder_text="Size (bytes)", height=36)
-        
-        self.read_btn = ctk.CTkButton(
-            tab,
-            text="Read File",
-            command=self.dummy_read,
-            fg_color=COLORS["primary"],
-            hover_color=COLORS["secondary"],
-            height=36
-        )
-        self.read_btn.pack(pady=10)
-        
-        self.read_output = ctk.CTkTextbox(
-            tab,
-            height=80,
-            border_width=1,
-            border_color="#e9ecef",
-            fg_color="white",
-            corner_radius=8
-        )
-        self.read_output.pack(fill="x", padx=5, pady=5)
-    
-    def setup_write_tab(self):
-        tab = self.tabview.tab("✏️ Write")
-        
-        ctk.CTkLabel(tab, text="Write Options", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
-        
-        self.write_mode = ctk.CTkSegmentedButton(
-            tab,
-            values=["Append", "Write At"],
-            selected_color=COLORS["primary"],
-            selected_hover_color=COLORS["secondary"]
-        )
-        self.write_mode.pack(pady=5)
-        
-        self.write_pos = ctk.CTkEntry(tab, placeholder_text="Position (bytes)", height=36)
-        self.write_content = ctk.CTkTextbox(
-            tab,
-            height=80,
-            border_width=1,
-            border_color="#e9ecef",
-            fg_color="white",
-            corner_radius=8
-        )
-        
-        self.write_btn = ctk.CTkButton(
-            tab,
-            text="Write Content",
-            command=self.dummy_write,
-            fg_color=COLORS["primary"],
-            hover_color=COLORS["secondary"],
-            height=36
-        )
-        
-        self.write_content.pack(fill="x", padx=5, pady=5)
-        self.write_pos.pack(fill="x", padx=5, pady=5)
-        self.write_btn.pack(pady=10)
-    
-    def setup_move_tab(self):
-        tab = self.tabview.tab("↔️ Move")
-        
-        ctk.CTkLabel(tab, text="Move Content Within File", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
-        
-        self.move_from = ctk.CTkEntry(tab, placeholder_text="From Position", height=36)
-        self.move_to = ctk.CTkEntry(tab, placeholder_text="To Position", height=36)
-        self.move_size = ctk.CTkEntry(tab, placeholder_text="Size (bytes)", height=36)
-        
-        fields = [
-            ("From Position", self.move_from),
-            ("To Position", self.move_to),
-            ("Size (bytes)", self.move_size)
-        ]
-        
-        for label, entry in fields:
-            frame = ctk.CTkFrame(tab, fg_color="transparent")
-            frame.pack(fill="x", padx=5, pady=5)
-            ctk.CTkLabel(frame, text=label, width=100).pack(side="left")
-            entry.pack(side="right", fill="x", expand=True)
-        
-        self.move_btn = ctk.CTkButton(
-            tab,
-            text="Move Content",
-            command=self.dummy_move,
-            fg_color=COLORS["primary"],
-            hover_color=COLORS["secondary"],
-            height=36
-        )
-        self.move_btn.pack(pady=10)
-    
-    def setup_truncate_tab(self):
-        tab = self.tabview.tab("✂️ Truncate")
-        
-        ctk.CTkLabel(tab, text="Truncate File", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 5))
-        
-        ctk.CTkLabel(tab, text="New File Size (bytes):").pack(pady=(5, 0))
-        self.truncate_size = ctk.CTkEntry(tab, height=36)
-        self.truncate_size.pack(fill="x", padx=5, pady=5)
-        
-        self.truncate_btn = ctk.CTkButton(
-            tab,
-            text="Truncate File",
-            command=self.dummy_truncate,
-            fg_color=COLORS["primary"],
-            hover_color=COLORS["secondary"],
-            height=36
-        )
-        self.truncate_btn.pack(pady=10)
-    
-    def dummy_read(self):
-        selected = self.tree.selection()
-        if not selected:
-            self.read_output.delete("1.0", "end")
-            self.read_output.insert("1.0", "No file selected")
-            return
-            
-        path = selected[0]
-        if os.path.isdir(path):
-            self.read_output.delete("1.0", "end")
-            self.read_output.insert("1.0", "Cannot read a directory")
-            return
-            
-        try:
-            with open(path, 'r') as f:
-                content = f.read(1000)  # Read first 1000 chars
-                self.read_output.delete("1.0", "end")
-                self.read_output.insert("1.0", content)
-        except Exception as e:
-            self.read_output.delete("1.0", "end")
-            self.read_output.insert("1.0", f"Error reading file: {e}")
-    
-    def dummy_write(self):
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showerror("Error", "No file selected")
-            return
-            
-        path = selected[0]
-        if os.path.isdir(path):
-            messagebox.showerror("Error", "Cannot write to a directory")
-            return
-            
-        content = self.write_content.get("1.0", "end-1c")
-        if not content:
-            messagebox.showerror("Error", "No content to write")
-            return
-            
-        try:
-            mode = 'a' if self.write_mode.get() == "Append" else 'w'
-            with open(path, mode) as f:
-                f.write(content)
-            messagebox.showinfo("Success", "Content written to file")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to write file: {e}")
-    
-    def dummy_move(self):
-        messagebox.showinfo("Info", "Move content within file will be implemented in future version")
-    
-    def dummy_truncate(self):
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showerror("Error", "No file selected")
-            return
-            
-        path = selected[0]
-        if os.path.isdir(path):
-            messagebox.showerror("Error", "Cannot truncate a directory")
-            return
-            
-        try:
-            size = int(self.truncate_size.get())
-            with open(path, 'r+') as f:
-                f.truncate(size)
-            messagebox.showinfo("Success", f"File truncated to {size} bytes")
-            self.load_directory(self.current_dir)  # Refresh view
-        except ValueError:
-            messagebox.showerror("Error", "Invalid size value")
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to truncate file: {e}")
-    
-    def move_file(self):
-        selected = self.tree.selection()
-        if not selected:
-            messagebox.showerror("Error", "No file selected")
-            return
-            
-        path = selected[0]
-        dest = filedialog.askdirectory(initialdir=self.current_dir)
-        if dest:
-            try:
-                shutil.move(path, dest)
-                self.load_directory(self.current_dir)
-                messagebox.showinfo("Success", "File moved successfully")
-            except Exception as e:
-                messagebox.showerror("Error", f"Failed to move file: {e}")
-    
+    def delete(self, fName):
+        full_path = self.get_full_path(fName)
+        parent_path = os.path.dirname(full_path)
+        fname = os.path.basename(full_path)
+
+        parent = self.get_directory(parent_path)
+        if not parent or fname not in parent["contents"]:
+            return "File/directory does not exist"
+
+        if parent["contents"][fname]["type"] == "file":
+            data_id = parent["contents"][fname]["data_id"]
+            del self.memory_map[data_id]
+        del parent["contents"][fname]
+        self.save_data()
+        return f"{fName} deleted"
+
+    def mkdir(self, dirName):
+        full_path = self.get_full_path(dirName)
+        parent_path = os.path.dirname(full_path)
+        dirname = os.path.basename(full_path)
+
+        parent = self.get_directory(parent_path)
+        if not parent:
+            return "Parent directory does not exist"
+        if dirname in parent["contents"]:
+            return "Directory already exists"
+
+        parent["contents"][dirname] = {
+            "type": "directory",
+            "contents": {},
+            "created": str(datetime.now())
+        }
+        self.save_data()
+        return f"Directory {dirName} created"
+
+    def chdir(self, dirName):
+        full_path = self.get_full_path(dirName)
+        directory = self.get_directory(full_path)
+        if not directory or directory["type"] != "directory":
+            return "Directory does not exist"
+        self.current_dir = full_path
+        return f"Changed to {dirName}"
+
+    def move(self, source_fName, target_fName):
+        source_path = self.get_full_path(source_fName)
+        target_path = self.get_full_path(target_fName)
+        source_parent = os.path.dirname(source_path)
+        target_parent = os.path.dirname(target_path)
+        source_name = os.path.basename(source_path)
+        target_name = os.path.basename(target_path)
+
+        src_parent = self.get_directory(source_parent)
+        tgt_parent = self.get_directory(target_parent)
+
+        if not src_parent or source_name not in src_parent["contents"]:
+            return "Source does not exist"
+        if not tgt_parent:
+            return "Target directory does not exist"
+        if target_name in tgt_parent["contents"]:
+            return "Target already exists"
+
+        tgt_parent["contents"][target_name] = src_parent["contents"][source_name]
+        del src_parent["contents"][source_name]
+        self.save_data()
+        return f"Moved {source_fName} to {target_fName}"
+
+    def get_directory(self, path):
+        if path == "/":
+            return self.fs_structure["/"]
+        parts = path.strip("/").split("/")
+        current = self.fs_structure["/"]
+        for part in parts:
+            if part not in current["contents"] or current["contents"][part]["type"] != "directory":
+                return None
+            current = current["contents"][part]
+        return current
+
+    def open(self, fName, mode):
+        full_path = self.get_full_path(fName)
+        parent_path = os.path.dirname(full_path)
+        fname = os.path.basename(full_path)
+
+        parent = self.get_directory(parent_path)
+        if not parent:
+            return None, "Parent directory does not exist"
+
+        if fname not in parent["contents"] or parent["contents"][fname]["type"] != "file":
+            if mode in ["w", "a"]:
+                result = self.create(fName)
+                if "created" not in result:
+                    return None, result
+                parent = self.get_directory(parent_path)  # Refresh parent
+            else:
+                return None, "File does not exist"
+
+        file_obj = FileObject(self, parent["contents"][fname]["data_id"], mode)
+        self.open_files[full_path] = file_obj
+        return file_obj, f"File {fName} opened in {mode} mode"
+
+    def close(self, fName):
+        full_path = self.get_full_path(fName)
+        if full_path in self.open_files:
+            del self.open_files[full_path]
+            self.save_data()
+            return f"File {fName} closed"
+        return "File not open"
+
     def show_memory_map(self):
-        """Display a visual memory map of the current directory's contents"""
-        # Create a new top-level window
-        map_window = ctk.CTkToplevel(self.root)
-        map_window.title("Memory Map")
-        map_window.geometry("800x600")
-        map_window.transient(self.root)
+        result = "Memory Map:\n"
+        for data_id, content in self.memory_map.items():
+            result += f"Block {data_id}: {len(content)} bytes\n"
+        return result
+
+    def list_dir(self, dir_path=None):
+        if dir_path is None:
+            dir_path = self.current_dir
+        full_path = self.get_full_path(dir_path)
+        directory = self.get_directory(full_path)
+        if not directory or directory["type"] != "directory":
+            return "Directory does not exist"
         
-        # Create a frame for the visualization
-        map_frame = ctk.CTkFrame(map_window)
-        map_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        result = f"Contents of {full_path}:\n"
+        for name, info in directory["contents"].items():
+            item_type = info["type"].capitalize()
+            created = info["created"]
+            size = info.get("size", 0) if info["type"] == "file" else "-"
+            result += f"{item_type:<10} {name:<20} Size: {size:<10} Created: {created}\n"
+        return result
+
+class FileObject:
+    def __init__(self, fs, data_id, mode):
+        self.fs = fs
+        self.data_id = data_id
+        self.mode = mode
+
+    def write_to_file(self, text, write_at=None):
+        if self.mode not in ["w", "a"]:
+            return "Invalid mode for writing"
+        content = self.fs.memory_map[self.data_id]
+        if self.mode == "w" and write_at is None:
+            content = text  # Overwrite in write mode
+        elif write_at is None:
+            content += text  # Append in append mode
+        else:
+            content = content[:write_at] + text + content[write_at + len(text):]
+        self.fs.memory_map[self.data_id] = content
+        self.fs.save_data()
+        return "Write successful"
+
+    def read_from_file(self, start=None, size=None):
+        content = self.fs.memory_map[self.data_id]
+        if start is None:
+            return content
+        start = max(0, start)
+        if size is None:
+            return content[start:]
+        return content[start:start + size]
+
+    def move_within_file(self, start, size, target):
+        content = self.fs.memory_map[self.data_id]
+        if start < 0 or size < 0 or target < 0 or start + size > len(content):
+            return "Invalid move parameters"
+        data = content[start:start + size]
+        content = content[:start] + content[start + size:]
+        content = content[:target] + data + content[target:]
+        self.fs.memory_map[self.data_id] = content
+        self.fs.save_data()
+        return "Move successful"
+
+    def truncate_file(self, maxSize):
+        if maxSize < 0:
+            return "Invalid truncate size"
+        self.fs.memory_map[self.data_id] = self.fs.memory_map[self.data_id][:maxSize]
+        self.fs.save_data()
+        return "Truncate successful"
+
+class FileSystemGUI:
+    def __init__(self, root):
+        self.fs = FileSystem()
+        self.root = root
+        self.root.title("Distributed File Management System")
+        self.root.geometry("1000x700")
+        self.root.configure(bg="#f5f5f5")
+
+        # Style configuration
+        self.style = ttk.Style()
+        self.style.theme_use('clam')
         
-        # Create a standard tkinter Canvas
-        from tkinter import Canvas
-        canvas = Canvas(map_frame, bg="white", bd=0, highlightthickness=0)
-        canvas.pack(fill="both", expand=True)
+        # Configure styles
+        self.style.configure("TFrame", background="#f5f5f5")
+        self.style.configure("TLabel", background="#f5f5f5", font=("Segoe UI", 10))
+        self.style.configure("TButton", font=("Segoe UI", 10), padding=5)
+        self.style.configure("TEntry", font=("Segoe UI", 10), padding=5)
+        self.style.configure("TNotebook", background="#f5f5f5")
+        self.style.configure("TNotebook.Tab", font=("Segoe UI", 10), padding=[10, 5])
+        self.style.configure("Header.TLabel", font=("Segoe UI", 12, "bold"))
         
-        # Calculate directory statistics
-        total_size = 0
-        file_data = []
-        skipped_items = []
+        # Main container
+        self.main_container = ttk.Frame(root, padding="10")
+        self.main_container.pack(fill=tk.BOTH, expand=True)
         
-        for item in os.listdir(self.current_dir):
-            full_path = os.path.join(self.current_dir, item)
-            try:
-                if os.path.islink(full_path):  # Skip symbolic links
-                    continue
-                    
-                if os.path.isdir(full_path):
-                    try:
-                        size = sum(os.path.getsize(os.path.join(dirpath, filename)) 
-                                for dirpath, dirnames, filenames in os.walk(full_path) 
-                                for filename in filenames)
-                    except (PermissionError, OSError) as e:
-                        skipped_items.append(f"{item} (directory)")
-                        continue
-                else:
-                    try:
-                        size = os.path.getsize(full_path)
-                    except (PermissionError, OSError) as e:
-                        skipped_items.append(f"{item} (file)")
-                        continue
-                
-                file_data.append({
-                    'name': item,
-                    'size': size,
-                    'is_dir': os.path.isdir(full_path)
-                })
-                total_size += size
-                
-            except Exception as e:
-                skipped_items.append(f"{item} (error: {str(e)})")
-                continue
+        # Header
+        self.header_frame = ttk.Frame(self.main_container)
+        self.header_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Show skipped items in console (optional)
-        if skipped_items:
-            print(f"Skipped {len(skipped_items)} items:")
-            for item in skipped_items:
-                print(f" - {item}")
+        ttk.Label(self.header_frame, text="Distributed File System", style="Header.TLabel").pack(side=tk.LEFT)
         
-        if not file_data:
-            canvas.create_text(400, 300, 
-                            text="No displayable files found\n(Skipped {} items)".format(len(skipped_items)), 
-                            font=("Arial", 16),
-                            fill="#333333")
-            self.add_close_button(map_window)
+        # Current directory display
+        self.current_dir_frame = ttk.Frame(self.main_container)
+        self.current_dir_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        self.current_dir_label = ttk.Label(
+            self.current_dir_frame, 
+            text=f"Current Directory: {self.fs.current_dir}",
+            background="#e1e1e1",
+            padding=(10, 5),
+            relief=tk.SUNKEN,
+            anchor=tk.W
+        )
+        self.current_dir_label.pack(fill=tk.X)
+        
+        # Notebook for tabs
+        self.notebook = ttk.Notebook(self.main_container)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # File Operations Tab
+        self.file_ops_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.file_ops_tab, text="File Operations")
+        
+        # File Operations Frame
+        self.file_ops_frame = ttk.LabelFrame(
+            self.file_ops_tab, 
+            text="File/Directory Operations",
+            padding=(15, 10)
+        )
+        self.file_ops_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Name entry
+        ttk.Label(self.file_ops_frame, text="Name:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.name_entry = ttk.Entry(self.file_ops_frame, width=40)
+        self.name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        # Operation buttons
+        button_frame = ttk.Frame(self.file_ops_frame)
+        button_frame.grid(row=1, column=0, columnspan=2, pady=10)
+        
+        ttk.Button(button_frame, text="Create File", command=self.create_file).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Create Directory", command=self.create_dir).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Delete", command=self.delete).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Change Directory", command=self.change_dir).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="List Directory", command=self.list_directory).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="Show Memory Map", command=self.show_memory_map).pack(side=tk.LEFT, padx=5)
+        
+        # Move operation
+        ttk.Label(self.file_ops_frame, text="Move Target:").grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+        self.target_entry = ttk.Entry(self.file_ops_frame, width=40)
+        self.target_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Button(
+            self.file_ops_frame, 
+            text="Move File/Directory", 
+            command=self.move_file,
+            style="Accent.TButton"
+        ).grid(row=3, column=0, columnspan=2, pady=10)
+        
+        # File Content Tab
+        self.file_content_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.file_content_tab, text="File Content")
+        
+        # File Content Frame
+        self.file_content_frame = ttk.LabelFrame(
+            self.file_content_tab, 
+            text="File Content Operations",
+            padding=(15, 10)
+        )
+        self.file_content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # File selection
+        ttk.Label(self.file_content_frame, text="File Name:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.file_name_entry = ttk.Entry(self.file_content_frame, width=40)
+        self.file_name_entry.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        # Mode selection
+        ttk.Label(self.file_content_frame, text="Mode:").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.mode_var = tk.StringVar(value="r")
+        mode_frame = ttk.Frame(self.file_content_frame)
+        mode_frame.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        ttk.Radiobutton(mode_frame, text="Read", variable=self.mode_var, value="r").pack(side=tk.LEFT)
+        ttk.Radiobutton(mode_frame, text="Write", variable=self.mode_var, value="w").pack(side=tk.LEFT, padx=10)
+        ttk.Radiobutton(mode_frame, text="Append", variable=self.mode_var, value="a").pack(side=tk.LEFT)
+        
+        # Open/Close buttons
+        button_frame2 = ttk.Frame(self.file_content_frame)
+        button_frame2.grid(row=2, column=0, columnspan=2, pady=10)
+        ttk.Button(button_frame2, text="Open File", command=self.open_file).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame2, text="Close File", command=self.close_file).pack(side=tk.LEFT, padx=5)
+        
+        # Write section
+        write_frame = ttk.LabelFrame(
+            self.file_content_frame, 
+            text="Write to File",
+            padding=(10, 5)
+        )
+        write_frame.grid(row=3, column=0, columnspan=2, sticky=tk.W+tk.E, pady=10)
+        
+        ttk.Label(write_frame, text="Text:").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.write_text = ttk.Entry(write_frame, width=40)
+        self.write_text.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Label(write_frame, text="Position (optional):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.write_at = ttk.Entry(write_frame, width=10)
+        self.write_at.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Button(write_frame, text="Write", command=self.write_file).grid(row=2, column=0, columnspan=2, pady=5)
+        
+        # Read section
+        read_frame = ttk.LabelFrame(
+            self.file_content_frame, 
+            text="Read from File",
+            padding=(10, 5)
+        )
+        read_frame.grid(row=4, column=0, columnspan=2, sticky=tk.W+tk.E, pady=10)
+        
+        ttk.Label(read_frame, text="Start (optional):").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        self.read_start = ttk.Entry(read_frame, width=10)
+        self.read_start.grid(row=0, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Label(read_frame, text="Size (optional):").grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+        self.read_size = ttk.Entry(read_frame, width=10)
+        self.read_size.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+        
+        ttk.Button(read_frame, text="Read", command=self.read_file).grid(row=2, column=0, columnspan=2, pady=5)
+        
+        # Advanced operations
+        advanced_frame = ttk.LabelFrame(
+            self.file_content_frame, 
+            text="Advanced Operations",
+            padding=(10, 5)
+        )
+        advanced_frame.grid(row=5, column=0, columnspan=2, sticky=tk.W+tk.E, pady=10)
+        
+        # Move within file
+        ttk.Label(advanced_frame, text="Move Data Within File:").grid(row=0, column=0, columnspan=2, pady=5, sticky=tk.W)
+        
+        ttk.Label(advanced_frame, text="Start:").grid(row=1, column=0, padx=5, pady=2, sticky=tk.W)
+        self.move_start = ttk.Entry(advanced_frame, width=10)
+        self.move_start.grid(row=1, column=1, padx=5, pady=2, sticky=tk.W)
+        
+        ttk.Label(advanced_frame, text="Size:").grid(row=2, column=0, padx=5, pady=2, sticky=tk.W)
+        self.move_size = ttk.Entry(advanced_frame, width=10)
+        self.move_size.grid(row=2, column=1, padx=5, pady=2, sticky=tk.W)
+        
+        ttk.Label(advanced_frame, text="Target:").grid(row=3, column=0, padx=5, pady=2, sticky=tk.W)
+        self.move_target = ttk.Entry(advanced_frame, width=10)
+        self.move_target.grid(row=3, column=1, padx=5, pady=2, sticky=tk.W)
+        
+        ttk.Button(advanced_frame, text="Move Within File", command=self.move_within_file).grid(
+            row=4, column=0, columnspan=2, pady=5)
+        
+        # Truncate
+        ttk.Label(advanced_frame, text="Truncate File:").grid(row=5, column=0, padx=5, pady=5, sticky=tk.W)
+        self.truncate_size = ttk.Entry(advanced_frame, width=10)
+        self.truncate_size.grid(row=5, column=1, padx=5, pady=5, sticky=tk.W)
+        ttk.Button(advanced_frame, text="Truncate", command=self.truncate_file).grid(
+            row=6, column=0, columnspan=2, pady=5)
+        
+        # Output console
+        console_frame = ttk.LabelFrame(
+            self.main_container, 
+            text="Output Console",
+            padding=(10, 5)
+        )
+        console_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        
+        self.output_text = tk.Text(
+            console_frame, 
+            height=10, 
+            width=80, 
+            font=("Consolas", 10),
+            wrap=tk.WORD,
+            bg="#2d2d2d",
+            fg="#f0f0f0",
+            insertbackground="white"
+        )
+        self.output_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Scrollbar for output text
+        scrollbar = ttk.Scrollbar(self.output_text)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.output_text.config(yscrollcommand=scrollbar.set)
+        scrollbar.config(command=self.output_text.yview)
+        
+        # Status bar
+        self.status_bar = ttk.Label(
+            self.main_container, 
+            text="Ready",
+            relief=tk.SUNKEN,
+            anchor=tk.W,
+            padding=(10, 5)
+        )
+        self.status_bar.pack(fill=tk.X)
+        
+        # Create an accent style for important buttons
+        self.style.configure("Accent.TButton", background="#4a90e2", foreground="white")
+        
+        # Set focus to name entry
+        self.name_entry.focus()
+        
+    def update_status(self, message):
+        self.status_bar.config(text=message)
+        
+    def create_file(self):
+        name = self.name_entry.get()
+        if not name:
+            self.update_status("Error: Please enter a file name")
+            messagebox.showerror("Error", "Please enter a file name")
             return
+            
+        result = self.fs.create(name)
+        self.output_text.insert(tk.END, result + "\n")
+        self.current_dir_label.config(text=f"Current Directory: {self.fs.current_dir}")
+        self.update_status("File created successfully")
+        messagebox.showinfo("Success", result)
         
-        # Sort files by size (descending)
-        file_data.sort(key=lambda x: x['size'], reverse=True)
+    def create_dir(self):
+        name = self.name_entry.get()
+        if not name:
+            self.update_status("Error: Please enter a directory name")
+            messagebox.showerror("Error", "Please enter a directory name")
+            return
+            
+        result = self.fs.mkdir(name)
+        self.output_text.insert(tk.END, result + "\n")
+        self.current_dir_label.config(text=f"Current Directory: {self.fs.current_dir}")
+        self.update_status("Directory created successfully")
+        messagebox.showinfo("Success", result)
         
-        # Visualization parameters
-        width = 700
-        height = 500
-        margin = 20
-        max_blocks = 50
+    def delete(self):
+        name = self.name_entry.get()
+        if not name:
+            self.update_status("Error: Please enter a file/directory name")
+            messagebox.showerror("Error", "Please enter a file/directory name")
+            return
+            
+        result = self.fs.delete(name)
+        self.output_text.insert(tk.END, result + "\n")
+        self.current_dir_label.config(text=f"Current Directory: {self.fs.current_dir}")
+        self.update_status("File/directory deleted successfully")
+        messagebox.showinfo("Success", result)
         
-        # Draw title and summary
-        canvas.create_text(width//2, 20, 
-                        text=f"Memory Map: {self.current_dir}", 
-                        font=("Arial", 14, "bold"),
-                        fill="#333333")
+    def change_dir(self):
+        name = self.name_entry.get()
+        if not name:
+            self.update_status("Error: Please enter a directory name")
+            messagebox.showerror("Error", "Please enter a directory name")
+            return
+            
+        result = self.fs.chdir(name)
+        self.output_text.insert(tk.END, result + "\n")
+        self.current_dir_label.config(text=f"Current Directory: {self.fs.current_dir}")
+        self.update_status("Directory changed successfully")
+        messagebox.showinfo("Success", result)
         
-        info_text = (f"Total Size: {self.format_size(total_size)} | "
-                    f"{len(file_data)} items displayed | "
-                    f"{len(skipped_items)} items skipped")
-        canvas.create_text(width//2, 50, 
-                        text=info_text, 
-                        font=("Arial", 12),
-                        fill="#555555")
+    def move_file(self):
+        source = self.name_entry.get()
+        target = self.target_entry.get()
         
-        # Draw the visualization (same as before)
-        # ... [rest of your visualization code remains the same] ...
+        if not source or not target:
+            self.update_status("Error: Please enter both source and target paths")
+            messagebox.showerror("Error", "Please enter both source and target paths")
+            return
+            
+        result = self.fs.move(source, target)
+        self.output_text.insert(tk.END, result + "\n")
+        self.current_dir_label.config(text=f"Current Directory: {self.fs.current_dir}")
+        self.update_status("File/directory moved successfully")
+        messagebox.showinfo("Success", result)
         
-        self.add_close_button(map_window)
+    def open_file(self):
+        name = self.file_name_entry.get()
+        if not name:
+            self.update_status("Error: Please enter a file name")
+            messagebox.showerror("Error", "Please enter a file name")
+            return
+            
+        mode = self.mode_var.get()
+        file_obj, result = self.fs.open(name, mode)
+        if file_obj:
+            self.output_text.insert(tk.END, result + "\n")
+            self.current_dir_label.config(text=f"Current Directory: {self.fs.current_dir}")
+            self.update_status(f"File opened in {mode} mode")
+            messagebox.showinfo("Success", result)
+        else:
+            self.output_text.insert(tk.END, result + "\n")
+            self.update_status("Error: Could not open file")
+            messagebox.showerror("Error", result)
+        
+    def close_file(self):
+        name = self.file_name_entry.get()
+        if not name:
+            self.update_status("Error: Please enter a file name")
+            messagebox.showerror("Error", "Please enter a file name")
+            return
+            
+        result = self.fs.close(name)
+        self.output_text.insert(tk.END, result + "\n")
+        self.current_dir_label.config(text=f"Current Directory: {self.fs.current_dir}")
+        self.update_status("File closed successfully")
+        messagebox.showinfo("Success", result)
+        
+    def write_file(self):
+        name = self.file_name_entry.get()
+        text = self.write_text.get()
+        if not name or not text:
+            self.update_status("Error: Please enter file name and text to write")
+            messagebox.showerror("Error", "Please enter file name and text to write")
+            return
 
-    def add_close_button(self, window):
-        """Helper method to add a close button"""
-        btn_frame = ctk.CTkFrame(window)
-        btn_frame.pack(pady=10)
-        
-        ctk.CTkButton(btn_frame, 
-                    text="Close", 
-                    command=window.destroy,
-                    width=100).pack(padx=5)
+        mode = self.mode_var.get()
+        if mode not in ["w", "a"]:
+            self.update_status("Error: Invalid mode selected for writing")
+            messagebox.showerror("Error", "Invalid mode selected for writing")
+            return
 
-    def refresh_memory_map(self, window):
-        """Refresh the memory map display"""
-        window.destroy()
-        self.show_memory_map()
+        file_obj, result = self.fs.open(name, mode)
+        if file_obj:
+            try:
+                write_at = self.write_at.get()
+                if write_at:
+                    result = file_obj.write_to_file(text, int(write_at))
+                else:
+                    result = file_obj.write_to_file(text)
+                self.output_text.insert(tk.END, result + "\n")
+                self.fs.close(name)
+                self.update_status("Text written to file successfully")
+                messagebox.showinfo("Success", result)
+            except ValueError:
+                self.update_status("Error: Position must be a number")
+                messagebox.showerror("Error", "Position must be a number")
+            except Exception as e:
+                self.update_status(f"Error: {str(e)}")
+                messagebox.showerror("Error", str(e))
+        else:
+            self.output_text.insert(tk.END, result + "\n")
+            self.update_status("Error: Could not open file")
+            messagebox.showerror("Error", result)
+        
+    def read_file(self):
+        name = self.file_name_entry.get()
+        if not name:
+            self.update_status("Error: Please enter a file name")
+            messagebox.showerror("Error", "Please enter a file name")
+            return
+            
+        file_obj, result = self.fs.open(name, "r")
+        if file_obj:
+            try:
+                start = self.read_start.get()
+                size = self.read_size.get()
+                if start and size:
+                    content = file_obj.read_from_file(int(start), int(size))
+                elif start:
+                    content = file_obj.read_from_file(int(start))
+                elif size:
+                    content = file_obj.read_from_file(size=int(size))
+                else:
+                    content = file_obj.read_from_file()
+                    
+                self.output_text.insert(tk.END, f"Contents of {name}:\n{content}\n")
+                self.fs.close(name)
+                self.update_status("File read successfully")
+                messagebox.showinfo("Success", "File read successfully")
+            except ValueError:
+                self.update_status("Error: Start and size must be numbers")
+                messagebox.showerror("Error", "Start and size must be numbers")
+            except Exception as e:
+                self.update_status(f"Error: {str(e)}")
+                messagebox.showerror("Error", str(e))
+        else:
+            self.output_text.insert(tk.END, result + "\n")
+            self.update_status("Error: Could not open file")
+            messagebox.showerror("Error", result)
+        
+    def move_within_file(self):
+        name = self.file_name_entry.get()
+        start = self.move_start.get()
+        size = self.move_size.get()
+        target = self.move_target.get()
+        
+        if not name or not start or not size or not target:
+            self.update_status("Error: Please fill all fields for move operation")
+            messagebox.showerror("Error", "Please fill all fields for move operation")
+            return
+            
+        file_obj, result = self.fs.open(name, "w")
+        if file_obj:
+            try:
+                result = file_obj.move_within_file(int(start), int(size), int(target))
+                self.output_text.insert(tk.END, result + "\n")
+                self.fs.close(name)
+                self.update_status("Data moved within file successfully")
+                messagebox.showinfo("Success", result)
+            except ValueError:
+                self.update_status("Error: Positions must be numbers")
+                messagebox.showerror("Error", "Positions must be numbers")
+            except Exception as e:
+                self.update_status(f"Error: {str(e)}")
+                messagebox.showerror("Error", str(e))
+        else:
+            self.output_text.insert(tk.END, result + "\n")
+            self.update_status("Error: Could not open file")
+            messagebox.showerror("Error", result)
+        
+    def truncate_file(self):
+        name = self.file_name_entry.get()
+        size = self.truncate_size.get()
+        
+        if not name or not size:
+            self.update_status("Error: Please enter file name and size")
+            messagebox.showerror("Error", "Please enter file name and size")
+            return
+            
+        file_obj, result = self.fs.open(name, "w")
+        if file_obj:
+            try:
+                result = file_obj.truncate_file(int(size))
+                self.output_text.insert(tk.END, result + "\n")
+                self.fs.close(name)
+                self.update_status("File truncated successfully")
+                messagebox.showinfo("Success", result)
+            except ValueError:
+                self.update_status("Error: Size must be a number")
+                messagebox.showerror("Error", "Size must be a number")
+            except Exception as e:
+                self.update_status(f"Error: {str(e)}")
+                messagebox.showerror("Error", str(e))
+        else:
+            self.output_text.insert(tk.END, result + "\n")
+            self.update_status("Error: Could not open file")
+            messagebox.showerror("Error", result)
+        
+    def show_memory_map(self):
+        result = self.fs.show_memory_map()
+        self.output_text.insert(tk.END, result + "\n")
+        self.update_status("Memory map displayed")
+        messagebox.showinfo("Memory Map", result)
+    
+    def list_directory(self):
+        name = self.name_entry.get() or None
+        result = self.fs.list_dir(name)
+        self.output_text.insert(tk.END, result + "\n")
+        self.update_status("Directory contents listed")
+        messagebox.showinfo("Directory Contents", result)
 
 if __name__ == "__main__":
-    root = ctk.CTk()
-    app = FileManagerApp(root)
+    root = tk.Tk()
+    app = FileSystemGUI(root)
     root.mainloop()
