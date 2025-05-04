@@ -357,11 +357,11 @@ class FileManagerApp:
         
         # Add parent directory link
         parent = os.path.dirname(path)
-        if os.path.exists(parent):
+        if os.path.exists(parent) and parent:  # Ensure parent exists and isn't root
             self.tree.insert("", "end", text="..", 
-                           values=("--", "Parent", ""), 
-                           tags=("folder",), 
-                           iid=parent)
+                        values=("--", "Parent", ""), 
+                        tags=("folder",), 
+                        iid=parent)
         
         try:
             for item in sorted(os.listdir(path)):
@@ -415,11 +415,14 @@ class FileManagerApp:
         selected_count = len(self.selected_files)
         
         for item in self.tree.get_children():
-            full_path = self.tree.item(item)['iid']
-            if os.path.isfile(full_path):
-                file_info = self.fs.get_file_info(full_path)
-                if file_info:
-                    total_size += file_info['size']
+            try:
+                full_path = self.tree.item(item)['iid']
+                if os.path.isfile(full_path):
+                    file_info = self.fs.get_file_info(full_path)
+                    if file_info:
+                        total_size += file_info['size']
+            except KeyError:
+                continue  # Skip items that don't have an 'iid' (like the parent directory "..")
         
         # Get disk usage info
         try:
@@ -430,8 +433,8 @@ class FileManagerApp:
             free_percent = (free_space / total_space) * 100
             
             status_text = (f"{selected_count} item(s) selected • "
-                          f"Directory: {self.format_size(total_size)} • "
-                          f"Free: {self.format_size(free_space)} ({free_percent:.1f}%)")
+                        f"Directory: {self.format_size(total_size)} • "
+                        f"Free: {self.format_size(free_space)} ({free_percent:.1f}%)")
         except:
             status_text = f"{selected_count} item(s) selected • {self.current_dir}"
         
